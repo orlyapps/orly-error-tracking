@@ -53,6 +53,57 @@ OrlyErrorTracking::user(fn ($user): array => [
 
 Only flat values (strings, numbers, booleans, null). Pick user fields deliberately – never send the whole model.
 
+## Reporting manually
+
+```php
+use Orlyapps\OrlyErrorTracking\Facades\OrlyErrorTracking;
+
+// A caught exception, with metadata for this report (nested arrays become "response.status")
+OrlyErrorTracking::notifyException($e, function ($report) {
+    $report->setMetaData(['url' => $url, 'response' => ['status' => 500]]);
+    $report->setSeverity('warning');
+});
+
+// A problem without an exception – the name groups equal problems in Orly
+OrlyErrorTracking::notifyError('UpdateSyncedResource', 'More than one tenant found', fn ($report) => $report->setMetaData([
+    'tenants' => $tenants,
+]));
+```
+
+Plain `report($e)` works as well. `notifyException()` ignores the application's `dontReport` rules, `report()` respects them.
+
+## Log channel
+
+To turn log records into errors in Orly, like Bugsnag's log channel, add a channel in `config/logging.php` and put it into your stack:
+
+```php
+'stack' => ['driver' => 'stack', 'channels' => ['single', 'orly'], 'ignore_exceptions' => false],
+
+'orly' => ['driver' => 'orly', 'level' => 'warning'],
+```
+
+`Log::warning('Stripe payment failed', ['payment_intent' => $id])` then appears as `log.warning` with the log context. A record with `['exception' => $e]` reports that exception – once, even if Laravel reports it as well.
+
+## Automatically added context
+
+- values from Laravel's Context (`Context::add('import_batch', $id)`) – scalars only, models are never serialised
+- the running queued job (`job.name`, `job.queue`, `job.attempts`, `job.connection`) or artisan command (`command`)
+
+## Migrating from Bugsnag
+
+| Bugsnag | Orly |
+|---|---|
+| `bugsnag/bugsnag-laravel` + `BugsnagServiceProvider` | `orlyapps/orly-error-tracking`, registers itself |
+| `BUGSNAG_API_KEY` | `ORLY_ERROR_TRACKING_URL`, `ORLY_ERROR_TRACKING_KEY`, `ORLY_ERROR_TRACKING_ENABLED` |
+| `Bugsnag::notifyException($e, $callback)` | `OrlyErrorTracking::notifyException($e, $callback)` – same callback, `$report->setMetaData()` |
+| `Bugsnag::notifyError($name, $message, $callback)` | `OrlyErrorTracking::notifyError($name, $message, $callback)` |
+| `$report->setSeverity()` / `->setContext()` | same, sent as context `severity` / `location` |
+| log channel `'driver' => 'bugsnag'` | `'driver' => 'orly'` (set `level`, Bugsnag's default was `notice`) |
+| `Bugsnag::registerCallback()` for global metadata | `OrlyErrorTracking::context(fn () => [...])` |
+| user: all model attributes | user: `id`, `name`, `email` – add fields with `OrlyErrorTracking::user()` |
+| `APP_ENV` as release stage, `app_version` | `environment`, `ORLY_ERROR_TRACKING_RELEASE` |
+| SQL query breadcrumbs, sessions, JS errors | not supported |
+
 ## Flood protection
 
 An error on every request must not become hundreds of HTTP calls per second: the same exception is reported at most once per minute, at most 60 reports per minute leave the application, and after Orly answers `429` the package pauses. Reporting uses a 0.75 s timeout without retries and never throws.

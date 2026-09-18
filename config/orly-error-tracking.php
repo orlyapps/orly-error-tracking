@@ -41,6 +41,12 @@ return [
     'filtered_keys' => [],
 
     /*
+     * Send scalar values from Laravel's Context (Context::add) with every report.
+     * Objects such as Eloquent models are never serialised.
+     */
+    'laravel_context' => true,
+
+    /*
      * Parameters above this size are left out of the report.
      */
     'maximum_parameter_bytes' => 65536,

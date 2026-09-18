@@ -96,7 +96,7 @@ it('pauses after Orly answered 429', function () {
 });
 
 it('sends request, user and context, filtered', function () {
-    OrlyErrorTracking::context(fn (): array => ['tenant' => 'acme', 'nested' => ['ignored']]);
+    OrlyErrorTracking::context(fn (): array => ['tenant' => 'acme', 'nested' => ['flattened']]);
 
     Route::post('/dogs/{dog}', fn () => response()->json(app(PayloadBuilder::class)->build(new RuntimeException('x'))))->name('dogs.update');
 
@@ -111,7 +111,7 @@ it('sends request, user and context, filtered', function () {
 
     expect($payload['route_name'])->toBe('dogs.update')
         ->and($payload['external_user_id'])->toBe('76252')
-        ->and($payload['context'])->toBe(['tenant' => 'acme'])
+        ->and($payload['context'])->toEqualCanonicalizing(['tenant' => 'acme', 'nested.0' => 'flattened'])
         ->and($payload['user'])->toBe(['id' => 76252, 'name' => 'Syndia Cramer', 'email' => 'syndia@example.test'])
         ->and($payload['request']['client_ip'])->toBe('79.209.99.0')
         ->and($payload['request']['headers']['authorization'])->toBe('[FILTERED]')

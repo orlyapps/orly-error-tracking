@@ -14,7 +14,18 @@ use Throwable;
  */
 class Reporter
 {
-    public function __construct(private PayloadBuilder $payloadBuilder) {}
+    /**
+     * Exceptions already sent in this process – Laravel's handler and the log channel
+     * may both see the same exception, it must reach Orly only once.
+     *
+     * @var \WeakMap<Throwable, true>
+     */
+    private \WeakMap $reported;
+
+    public function __construct(private PayloadBuilder $payloadBuilder)
+    {
+        $this->reported = new \WeakMap;
+    }
 
     public function isConfigured(): bool
     {
@@ -23,14 +34,19 @@ class Reporter
             && filled(config('orly-error-tracking.key'));
     }
 
-    public function report(Throwable $exception): void
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    public function report(Throwable $exception, array $metadata = [], ?string $exceptionClass = null): void
     {
-        if (! $this->isConfigured() || $this->isThrottled($exception)) {
+        if (! $this->isConfigured() || isset($this->reported[$exception]) || $this->isThrottled($exception, $exceptionClass)) {
             return;
         }
 
+        $this->reported[$exception] = true;
+
         try {
-            $this->send($exception);
+            $this->send($exception, $metadata, $exceptionClass);
         } catch (Throwable) {
             // Reporting must never break the application or report itself.
         }
@@ -39,13 +55,16 @@ class Reporter
     /**
      * Sends right away, without flood protection – for `php artisan orly:test`.
      */
-    public function send(Throwable $exception): Response
+    /**
+     * @param  array<string, mixed>  $metadata
+     */
+    public function send(Throwable $exception, array $metadata = [], ?string $exceptionClass = null): Response
     {
         $response = Http::asJson()
             ->withToken((string) config('orly-error-tracking.key'))
             ->connectTimeout((float) config('orly-error-tracking.connect_timeout', 0.25))
             ->timeout((float) config('orly-error-tracking.timeout', 0.75))
-            ->post((string) config('orly-error-tracking.url'), $this->payloadBuilder->build($exception));
+            ->post((string) config('orly-error-tracking.url'), $this->payloadBuilder->build($exception, $metadata, $exceptionClass));
 
         if ($response->status() === 429) {
             Cache::put('orly-error-tracking:paused', true, max(1, (int) ($response->header('Retry-After') ?: 60)));
@@ -59,14 +78,14 @@ class Reporter
      * hundreds of HTTP calls per second: repeat errors, a global budget and a pause
      * after Orly answered 429 keep it to a handful per minute.
      */
-    private function isThrottled(Throwable $exception): bool
+    private function isThrottled(Throwable $exception, ?string $exceptionClass): bool
     {
         try {
             if (Cache::has('orly-error-tracking:paused')) {
                 return true;
             }
 
-            $sameError = 'orly-error-tracking:'.sha1($exception::class.'|'.$exception->getFile().'|'.$exception->getLine());
+            $sameError = 'orly-error-tracking:'.sha1(($exceptionClass ?? $exception::class).'|'.$exception->getFile().'|'.$exception->getLine());
 
             if (! Cache::add($sameError, true, (int) config('orly-error-tracking.same_error_seconds', 60))) {
                 return true;

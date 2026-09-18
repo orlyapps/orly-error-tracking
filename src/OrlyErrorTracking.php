@@ -43,4 +43,49 @@ class OrlyErrorTracking
     {
         $this->reporter->report($exception);
     }
+
+    /**
+     * Reports a caught exception – drop-in for Bugsnag::notifyException():
+     * OrlyErrorTracking::notifyException($e, fn ($report) => $report->setMetaData(['tenant' => tenant('id')]));
+     *
+     * Unlike report() it ignores the application's dontReport rules, like Bugsnag does.
+     *
+     * @param  (callable(Report): mixed)|null  $callback
+     */
+    public function notifyException(Throwable $exception, ?callable $callback = null): void
+    {
+        $this->reporter->report($exception, $this->metadataFrom($callback));
+    }
+
+    /**
+     * Reports a problem without an exception – drop-in for Bugsnag::notifyError('Name', 'Message', $callback).
+     * The name becomes the error class in Orly, so equal names are grouped.
+     *
+     * @param  (callable(Report): mixed)|null  $callback
+     */
+    public function notifyError(string $name, string $message, ?callable $callback = null): void
+    {
+        $this->reporter->report(new NotifiedError($message), $this->metadataFrom($callback), $name);
+    }
+
+    /**
+     * @param  (callable(Report): mixed)|null  $callback
+     * @return array<string, mixed>
+     */
+    private function metadataFrom(?callable $callback): array
+    {
+        if ($callback === null) {
+            return [];
+        }
+
+        try {
+            $report = new Report;
+            $callback($report);
+
+            return $report->metadata();
+        } catch (Throwable) {
+            // A failing callback must not prevent the report.
+            return [];
+        }
+    }
 }

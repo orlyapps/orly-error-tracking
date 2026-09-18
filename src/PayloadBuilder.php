@@ -5,6 +5,8 @@ namespace Orlyapps\OrlyErrorTracking;
 use Closure;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Str;
 use Throwable;
 
@@ -19,7 +21,10 @@ class PayloadBuilder
     /** @var (Closure(Authenticatable): array<string, scalar|null>)|null */
     private ?Closure $user = null;
 
-    public function __construct(private Redactor $redactor) {}
+    public function __construct(
+        private Redactor $redactor,
+        private RuntimeContext $runtimeContext,
+    ) {}
 
     /** @param  Closure(): array<string, scalar|null>  $resolver */
     public function resolveContextUsing(Closure $resolver): void
@@ -33,8 +38,11 @@ class PayloadBuilder
         $this->user = $resolver;
     }
 
-    /** @return array<string, mixed> */
-    public function build(Throwable $exception): array
+    /**
+     * @param  array<string, mixed>  $metadata  Per-report metadata (notify callbacks, log context); may be nested.
+     * @return array<string, mixed>
+     */
+    public function build(Throwable $exception, array $metadata = [], ?string $exceptionClass = null): array
     {
         // Only a routed request is a real HTTP request; artisan and queue workers have none.
         $request = app()->bound('request') && app('request')->route() !== null ? app('request') : null;
@@ -43,7 +51,7 @@ class PayloadBuilder
         return [
             'version' => 1,
             'event_uuid' => (string) Str::uuid(),
-            'exception_class' => Str::substr($exception::class, 0, 1024),
+            'exception_class' => Str::substr($exceptionClass ?? $exception::class, 0, 1024),
             'message' => Str::substr($exception->getMessage(), 0, 16384),
             'stack_trace' => Str::substr($exception->getTraceAsString(), 0, 204800),
             'occurred_at' => now()->toIso8601String(),
@@ -55,12 +63,37 @@ class PayloadBuilder
             'request_path' => $this->limited($request?->getPathInfo()),
             'route_name' => $this->limited($request?->route()?->getName()),
             'external_user_id' => $this->limited($user?->getAuthIdentifier()),
-            'context' => $this->flat(fn (): mixed => $this->context !== null ? ($this->context)() : []),
+            'context' => $this->context($metadata),
             'user' => $user === null ? null : $this->flat(fn (): mixed => $this->user !== null
                 ? ($this->user)($user)
                 : ['id' => $user->getAuthIdentifier(), 'name' => $user->name ?? null, 'email' => $user->email ?? null]),
             'request' => $request === null ? null : $this->request($request),
         ];
+    }
+
+    /**
+     * One flat list, most specific first so it wins the 50-key budget: the report's own
+     * metadata, the application's context resolver, the running job or command, and
+     * scalar values from Laravel's Context (Context::add).
+     *
+     * @param  array<string, mixed>  $metadata
+     * @return array<string, scalar|null>|null
+     */
+    private function context(array $metadata): ?array
+    {
+        $resolved = $this->flat(fn (): mixed => $this->context !== null ? ($this->context)() : []) ?? [];
+        $laravelContext = config('orly-error-tracking.laravel_context', true) && class_exists(Context::class)
+            ? $this->flat(fn (): mixed => Context::all()) ?? []
+            : [];
+
+        $merged = [
+            ...$laravelContext,
+            ...$this->runtimeContext->all(),
+            ...$resolved,
+            ...($this->flat(fn (): array => $metadata) ?? []),
+        ];
+
+        return $merged === [] ? null : array_slice(array_reverse($merged, true), 0, 50, true);
     }
 
     /** @return array<string, mixed> */
@@ -114,8 +147,11 @@ class PayloadBuilder
         }
 
         $flat = [];
+        $values = is_array($values) ? $this->redactor->values($values) : [];
 
-        foreach (is_array($values) ? $values : [] as $key => $value) {
+        // Nested metadata (e.g. ['model' => ['id' => 1]]) becomes "model.id"; objects such as
+        // Eloquent models are never serialised, so no hidden attribute can leak through.
+        foreach (Arr::dot($values) as $key => $value) {
             if (! is_string($key) || ($value !== null && ! is_scalar($value)) || count($flat) >= 50) {
                 continue;
             }
