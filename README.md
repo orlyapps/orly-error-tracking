@@ -1,78 +1,74 @@
-# :package_description
+# Orly Error Tracking for Laravel
 
-[![Latest Version on Packagist](https://img.shields.io/packagist/v/:vendor_slug/:package_slug.svg?style=flat-square)](https://packagist.org/packages/:vendor_slug/:package_slug)
-[![GitHub Tests Action Status](https://github.com/spatie/package-skeleton-laravel/actions/workflows/run-tests.yml/badge.svg)](https://github.com/:vendor_slug/:package_slug/actions?query=workflow%3Arun-tests+branch%3Amain)
-[![GitHub Code Style Action Status](https://github.com/spatie/package-skeleton-laravel/actions/workflows/fix-php-code-style-issues.yml/badge.svg)](https://github.com/:vendor_slug/:package_slug/actions?query=workflow%3A"Fix+PHP+code+style+issues"+branch%3Amain)
-[![Total Downloads](https://img.shields.io/packagist/dt/:vendor_slug/:package_slug.svg?style=flat-square)](https://packagist.org/packages/:vendor_slug/:package_slug)
-<!--delete-->
----
-This repo can be used to scaffold a Laravel package. Follow these steps to get started:
-
-1. Press the "Use this template" button at the top of this repo to create a new repo with the contents of this skeleton.
-2. Run "php ./configure.php" to run a script that will replace all placeholders throughout all the files.
-
-   To run it unattended — from a script, or by handing it to a coding agent — pass `--no-interaction`
-   (`-n`) and the answers as options. It never prompts, and exits non-zero with a message naming any
-   option it still needs:
-
-   ```bash
-   php ./configure.php -n --vendor-name="Spatie" --package-name="laravel-ray"
-   ```
-
-   Run "php ./configure.php --help" for the full list of options.
-3. Have fun creating your package.
-4. If you need help creating a package, consider picking up our <a href="https://laravelpackage.training">Laravel Package Training</a> video course.
----
-<!--/delete-->
-This is where your description should go. Limit it to a paragraph or two. Consider adding a small example.
-
-## Support us
-
-[<img src="https://github-ads.s3.eu-central-1.amazonaws.com/:package_name.jpg?t=1" width="419px" />](https://spatie.be/github-ad-click/:package_name)
-
-We invest a lot of resources into creating [best in class open source packages](https://spatie.be/open-source). You can support us by [buying one of our paid products](https://spatie.be/open-source/support-us).
-
-We highly appreciate you sending us a postcard from your hometown, mentioning which of our package(s) you are using. You'll find our address on [our contact page](https://spatie.be/about-us). We publish all received postcards on [our virtual postcard wall](https://spatie.be/open-source/postcards).
+Reports your Laravel application's exceptions to [Orly](https://orly.app) – with the failing request, the user and your own context, filtered and flood-safe. No code in your application: install, set three environment variables, done.
 
 ## Installation
 
-You can install the package via composer:
-
 ```bash
-composer require :vendor_slug/:package_slug
+composer require orlyapps/orly-error-tracking
 ```
 
-You can publish and run the migrations with:
-
-```bash
-php artisan vendor:publish --tag=":package_slug-migrations"
-php artisan migrate
+```dotenv
+ORLY_ERROR_TRACKING_ENABLED=true
+ORLY_ERROR_TRACKING_URL=https://orly.app/api/error-tracking/v1/events
+ORLY_ERROR_TRACKING_KEY=your-project-ingest-key
 ```
 
-You can publish the config file with:
+The URL and the key are shown in Orly under *Projekt → Error Tracking*. Then check the connection:
 
 ```bash
-php artisan vendor:publish --tag=":package_slug-config"
+php artisan orly:test
 ```
 
-This is the contents of the published config file:
+That's it. Everything Laravel reports – uncaught exceptions, `report()` calls, failed jobs – is sent to Orly as well. Your `dontReport` rules apply, and other reporters such as Bugsnag or Sentry keep working.
+
+## What is sent
+
+- exception, message and stack trace, environment, release, PHP and Laravel version
+- the request: URL, method, headers, parameters, shortened IP (`79.209.99.0`), user agent
+- the user: `id`, `name`, `email`
+- your context (see below)
+
+Before anything leaves the application, cookies, `Authorization` and CSRF headers, passwords, tokens, login and recovery codes, API keys and bank data are replaced by `[FILTERED]`. Parameters larger than 64 KB are left out. Orly filters again on arrival.
+
+## Optional: context and user fields
+
+In a service provider's `boot()` method:
 
 ```php
-return [
-];
+use Orlyapps\OrlyErrorTracking\Facades\OrlyErrorTracking;
+
+OrlyErrorTracking::context(fn (): array => [
+    'tenant' => tenant()?->getKey(),
+    'plan' => tenant()?->plan,
+]);
+
+OrlyErrorTracking::user(fn ($user): array => [
+    'id' => $user->getKey(),
+    'name' => $user->name,
+    'email' => $user->email,
+    'type' => $user->type,
+]);
 ```
 
-Optionally, you can publish the views using
+Only flat values (strings, numbers, booleans, null). Pick user fields deliberately – never send the whole model.
+
+## Flood protection
+
+An error on every request must not become hundreds of HTTP calls per second: the same exception is reported at most once per minute, at most 60 reports per minute leave the application, and after Orly answers `429` the package pauses. Reporting uses a 0.75 s timeout without retries and never throws.
+
+## Configuration
+
+Optional – publish the config to change limits or add keys to filter:
 
 ```bash
-php artisan vendor:publish --tag=":package_slug-views"
+php artisan vendor:publish --tag="orly-error-tracking-config"
 ```
 
-## Usage
-
-```php
-$:variable = new VendorName\Skeleton();
-echo $:variable->echoPhrase('Hello, VendorName!');
+```dotenv
+ORLY_ERROR_TRACKING_RELEASE=          # e.g. the deployed commit
+ORLY_ERROR_TRACKING_SAME_ERROR_SECONDS=60
+ORLY_ERROR_TRACKING_REPORTS_PER_MINUTE=60
 ```
 
 ## Testing
@@ -80,23 +76,6 @@ echo $:variable->echoPhrase('Hello, VendorName!');
 ```bash
 composer test
 ```
-
-## Changelog
-
-Please see [CHANGELOG](CHANGELOG.md) for more information on what has changed recently.
-
-## Contributing
-
-Please see [CONTRIBUTING](CONTRIBUTING.md) for details.
-
-## Security Vulnerabilities
-
-Please review [our security policy](../../security/policy) on how to report security vulnerabilities.
-
-## Credits
-
-- [:author_name](https://github.com/:author_username)
-- [All Contributors](../../contributors)
 
 ## License
 
